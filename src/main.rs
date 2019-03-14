@@ -25,10 +25,23 @@ use std::str;
 #[macro_use] extern crate prettytable;
 use prettytable::{Table, Row, Cell};
 
-fn main() -> tantivy::Result<()> {
+fn simplify(a: f32) -> f32{
+    if (a > 0.2) {
+        1.0
+    } else {
+        0.0
+    }
+}
 
+fn main() -> tantivy::Result<()> {
     // Get result rows from tantivy.
-    let tantivy_result = get_tantivy_matrix()?;
+    let (index, field) = create_test_index()?;
+    let tantivy_result = get_tantivy_matrix(index, field)?;
+    let ak = calculate_lsa(tantivy_result);
+    Ok(())
+}
+
+fn calculate_lsa(tantivy_result: Vec<TantivyDocTermFreq>) -> tantivy::Result<Matrix<f32>> {
 
     // Calculate number of documents.
     let mut max_docid = 0;
@@ -67,34 +80,45 @@ fn main() -> tantivy::Result<()> {
         *value = record.term_freq as f32;
     }
 
-    print_term_table(&terms_map, a.clone(), "a");
+    print_term_table(&terms_map, &a, "a");
 
     let svd = a.clone().svd().unwrap();
-    // let (s, mut u, v) = svd;
-    let (s, v, mut u) = svd;
+    let (s, mut u, v) = svd;
+    // let (s, v, mut u) = svd;
     print_matrix_table(s, "s");
     print_matrix_table(v, "v");
     print_matrix_table(u.clone(), "u");
 
-    let b = a.transpose();
+     let b = a.transpose();
     let c = &a * &b;
+    //let c = a.clone();
     let lu = FullPivLu::decompose(c).unwrap();
     let rank = lu.rank();
     println!("rank {:#?}", rank);
 
-    let k = rank - 1;
+    // let k = rank - 1;
+    let k = 3;
+
     let uk = u.sub_slice_mut([0, 0], u.rows(), k);
     let uk_transposed = u.sub_slice_mut([0, 0], u.rows(), k).transpose();
     let t = &uk * &uk_transposed;
 
     print_matrix_table(t.clone(), "t");
 
-    let ak = &t * b.clone();
+    let ak = &t * a.clone();
 
-    print_term_table(&terms_map, a, "a");
-    print_term_table(&terms_map, ak, "ak");
+    // calculate synonyms?
+    let threshold = 0.5;
+    let ak_simplified = ak.clone().apply(&simplify);
 
-    Ok(())
+    print_term_table(&terms_map, &a, "a");
+    print_term_table(&terms_map, &ak, "ak");
+    print_term_table(&terms_map, &ak_simplified, "ak_simplified");
+
+    // let x = &a - &ak_simplified;
+    // print_term_table(&terms_map, &x, "x");
+
+    Ok(ak)
 }
 
 fn print_matrix_table (matrix: Matrix<f32>, message: &str) {
@@ -111,7 +135,7 @@ fn print_matrix_table (matrix: Matrix<f32>, message: &str) {
     table.printstd();
 }
 
-fn print_term_table (terms_map: &HashMap<String, usize>, matrix: Matrix<f32>, message: &str) {
+fn print_term_table (terms_map: &HashMap<String, usize>, matrix: &Matrix<f32>, message: &str) {
     let mut table = Table::new();
     // let mut header = vec!(Cell::new("id"));
     let mut terms = vec!();
@@ -132,7 +156,7 @@ fn print_term_table (terms_map: &HashMap<String, usize>, matrix: Matrix<f32>, me
             fields.push(Cell::new(""));
         }
         for val in row.iter() {
-            let formatted_val = (val * 100.0).round() / 100.0;
+            let formatted_val = (val * 10.0).round();
             fields.push(Cell::new(&formatted_val.to_string()));
         }
         table.add_row(Row::new(fields));
@@ -152,7 +176,7 @@ struct TantivyDocTermFreq {
     // term: Term
 }
 
-fn get_tantivy_matrix<'a>() ->  tantivy::Result<Vec<TantivyDocTermFreq>> {
+fn create_test_index<'a>() ->  tantivy::Result<(Index, Field)> {
     // We first create a schema for the sake of the
     // example. Check the `basic_search` example for more information.
     let mut schema_builder = Schema::builder();
@@ -165,9 +189,10 @@ fn get_tantivy_matrix<'a>() ->  tantivy::Result<Vec<TantivyDocTermFreq>> {
     let index = Index::create_in_ram(schema.clone());
 
     let mut index_writer = index.writer_with_num_threads(1, 50_000_000)?;
-    // index_writer.add_document(doc!(title => "The Old Man and the Sea"));
-    // index_writer.add_document(doc!(title => "Of Mice and Men"));
-    // index_writer.add_document(doc!(title => "The modern Promotheus"));
+
+    index_writer.add_document(doc!(title => "The Old Man and Mice the Sea"));
+    index_writer.add_document(doc!(title => "Of Mice and Sea the"));
+    index_writer.add_document(doc!(title => "web web web The modern Promotheus Mice"));
 
     index_writer.add_document(doc!(title => "internet web surfing"));
     index_writer.add_document(doc!(title => "internet surfing"));
@@ -177,11 +202,12 @@ fn get_tantivy_matrix<'a>() ->  tantivy::Result<Vec<TantivyDocTermFreq>> {
     index_writer.add_document(doc!(title => "surfing beach"));
 
     index_writer.commit()?;
+    Ok((index, title))
+}
 
+fn get_tantivy_matrix<'a>(index: Index, field: Field) ->  tantivy::Result<Vec<TantivyDocTermFreq>> {
     index.load_searchers()?;
-
     let searcher = index.searcher();
-
     let mut records = vec!();
 
     // A tantivy index is actually a collection of segments.
@@ -195,7 +221,7 @@ fn get_tantivy_matrix<'a>() ->  tantivy::Result<Vec<TantivyDocTermFreq>> {
         // Inverted index stands for the combination of
         // - the term dictionary
         // - the inverted lists associated to each terms and their positions
-        let inverted_index = segment_reader.inverted_index(title);
+        let inverted_index = segment_reader.inverted_index(field);
 
 
         // let terms = inverted_index.termdict.
