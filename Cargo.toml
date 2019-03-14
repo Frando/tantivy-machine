@@ -1,0 +1,11 @@
+[package]
+name = "tantivy-machine"
+version = "0.1.0"
+authors = ["Franz Heinzmann (Frando) <frando@unbiskant.org>"]
+edition = "2018"
+
+[dependencies]
+tantivy = "^0.8.2"
+rulinalg =  { git = "https://github.com/AtheMathmo/rulinalg" }
+rusty-machine = "^0.5.4"
+prettytable-rs = "^0.8"

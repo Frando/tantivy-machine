@@ -11,16 +11,19 @@
 // Importing tantivy...
 #[macro_use]
 extern crate tantivy;
+extern crate rulinalg;
 use tantivy::schema::*;
 use tantivy::Index;
 use tantivy::{DocId, DocSet, Postings};
 
 use std::collections::HashMap;
 
-use rulinalg::matrix::{BaseMatrixMut, MatrixSliceMut, Matrix};
+use rulinalg::matrix::{BaseMatrixMut, BaseMatrix, Matrix};
+use rulinalg::matrix::decomposition::FullPivLu;
 use std::str;
 
-use std::fmt;
+#[macro_use] extern crate prettytable;
+use prettytable::{Table, Row, Cell};
 
 fn main() -> tantivy::Result<()> {
 
@@ -37,21 +40,21 @@ fn main() -> tantivy::Result<()> {
 
     // Map terms (strings) to ids (ints).
     let mut terms_map = HashMap::new();
-    let mut max_termid = 0;
+    let mut num_terms = 0;
     for record in &tantivy_result {
         if let Some(_) = terms_map.get(&record.term) {
         } else {
-            terms_map.insert(record.term.clone(), max_termid);
-            max_termid = max_termid + 1;
+            terms_map.insert(record.term.clone(), num_terms);
+            num_terms = num_terms + 1;
         }
     }
 
     println!("terms map {:?}", terms_map);
     println!("max_docid {:?}", max_docid);
-    println!("max_termid{:?}", max_termid);
+    println!("num_terms {:?}", num_terms);
 
     // Create zeroed matrix with docs as rows and terms as columns.
-    let mut a = Matrix::<u32>::zeros(max_docid as usize + 1, max_termid + 1);
+    let mut a = Matrix::<f32>::zeros(num_terms, max_docid as usize + 1);
 
     // Iterate over result rows.
     for record in &tantivy_result {
@@ -59,13 +62,85 @@ fn main() -> tantivy::Result<()> {
         println!("record {:?} {:?} {:?}", record.doc_id, *term_index, record.term_freq);
 
         // Set value in matrix.
-        let mut slice = a.sub_slice_mut([record.doc_id as usize, *term_index], 1, 1);
-        let mut value = slice.iter_mut().next().unwrap();
-        *value = record.term_freq;
+        let mut slice = a.sub_slice_mut([*term_index, record.doc_id as usize], 1, 1);
+        let value = slice.iter_mut().next().unwrap();
+        *value = record.term_freq as f32;
     }
-    println!("matrix {:?}", a);
+
+    print_term_table(&terms_map, a.clone(), "a");
+
+    let svd = a.clone().svd().unwrap();
+    // let (s, mut u, v) = svd;
+    let (s, v, mut u) = svd;
+    print_matrix_table(s, "s");
+    print_matrix_table(v, "v");
+    print_matrix_table(u.clone(), "u");
+
+    let b = a.transpose();
+    let c = &a * &b;
+    let lu = FullPivLu::decompose(c).unwrap();
+    let rank = lu.rank();
+    println!("rank {:#?}", rank);
+
+    let k = rank - 1;
+    let uk = u.sub_slice_mut([0, 0], u.rows(), k);
+    let uk_transposed = u.sub_slice_mut([0, 0], u.rows(), k).transpose();
+    let t = &uk * &uk_transposed;
+
+    print_matrix_table(t.clone(), "t");
+
+    let ak = &t * b.clone();
+
+    print_term_table(&terms_map, a, "a");
+    print_term_table(&terms_map, ak, "ak");
 
     Ok(())
+}
+
+fn print_matrix_table (matrix: Matrix<f32>, message: &str) {
+    let mut table = Table::new();
+    for row in matrix.row_iter() {
+        let mut fields = vec!();
+        for val in row.iter() {
+            let formatted_val = (val * 100.0).round() / 100.0;
+            fields.push(Cell::new(&formatted_val.to_string()));
+        }
+        table.add_row(Row::new(fields));
+    }
+    println!("\n{}\n", message);
+    table.printstd();
+}
+
+fn print_term_table (terms_map: &HashMap<String, usize>, matrix: Matrix<f32>, message: &str) {
+    let mut table = Table::new();
+    // let mut header = vec!(Cell::new("id"));
+    let mut terms = vec!();
+    for (key, _id) in terms_map {
+        terms.push(key);
+    }
+    terms.sort();
+    // table.add_row(Row::new(header));
+    let mut i = 0;
+
+    for row in matrix.row_iter() {
+        let mut fields = vec!();
+        // fields.push(Cell::new(&i.to_string()));
+        // let term = terms_map[i];
+        if i < terms.len() {
+            fields.push(Cell::new(terms[i]));
+        } else {
+            fields.push(Cell::new(""));
+        }
+        for val in row.iter() {
+            let formatted_val = (val * 100.0).round() / 100.0;
+            fields.push(Cell::new(&formatted_val.to_string()));
+        }
+        table.add_row(Row::new(fields));
+        i = i + 1;
+    }
+    // Add a row per time
+    println!("\n{}\n", message);
+    table.printstd();
 }
 
 #[derive(Debug)]
@@ -90,9 +165,17 @@ fn get_tantivy_matrix<'a>() ->  tantivy::Result<Vec<TantivyDocTermFreq>> {
     let index = Index::create_in_ram(schema.clone());
 
     let mut index_writer = index.writer_with_num_threads(1, 50_000_000)?;
-    index_writer.add_document(doc!(title => "The Old Man and the Sea"));
-    index_writer.add_document(doc!(title => "Of Mice and Men"));
-    index_writer.add_document(doc!(title => "The modern Promotheus"));
+    // index_writer.add_document(doc!(title => "The Old Man and the Sea"));
+    // index_writer.add_document(doc!(title => "Of Mice and Men"));
+    // index_writer.add_document(doc!(title => "The modern Promotheus"));
+
+    index_writer.add_document(doc!(title => "internet web surfing"));
+    index_writer.add_document(doc!(title => "internet surfing"));
+    index_writer.add_document(doc!(title => "web surfing"));
+    index_writer.add_document(doc!(title => "internet web surfing surfing beach"));
+    index_writer.add_document(doc!(title => "surfing beach"));
+    index_writer.add_document(doc!(title => "surfing beach"));
+
     index_writer.commit()?;
 
     index.load_searchers()?;
@@ -135,7 +218,7 @@ fn get_tantivy_matrix<'a>() ->  tantivy::Result<Vec<TantivyDocTermFreq>> {
                 inverted_index.read_postings_from_terminfo(&current_term, IndexRecordOption::WithFreqsAndPositions);
 
                 // this buffer will be used to request for positions
-                let mut positions: Vec<u32> = Vec::with_capacity(100);
+                // let mut positions: Vec<u32> = Vec::with_capacity(100);
                 while segment_postings.advance() {
                     // the number of time the term appears in the document.
                     let doc_id: DocId = segment_postings.doc(); //< do not try to access this before calling advance once.
@@ -147,26 +230,21 @@ fn get_tantivy_matrix<'a>() ->  tantivy::Result<Vec<TantivyDocTermFreq>> {
 
                     // the number of time the term appears in the document.
                     let term_freq: u32 = segment_postings.term_freq();
+
                     // accessing positions is slightly expensive and lazy, do not request
                     // for them if you don't need them for some documents.
-                    segment_postings.positions(&mut positions);
+                    // segment_postings.positions(&mut positions);
 
                     // By definition we should have `term_freq` positions.
-                    assert_eq!(positions.len(), term_freq as usize);
+                    // assert_eq!(positions.len(), term_freq as usize);
 
-                    // This prints:
-                    // ```
-                    // Doc 0: TermFreq 2: [0, 4]
-                    // Doc 2: TermFreq 1: [0]
-                    // ```
+                    // Add a record with doc id, term, and term freq.
                     let record = TantivyDocTermFreq {
                         doc_id,
                         term_freq,
                         term: String::from(current_text)
-                        // text: current_key
                     };
                     records.push(record);
-                    // println!("Doc {}: TermFreq {}: {:?}", doc_id, term_freq, positions);
                 }
         }
     }
