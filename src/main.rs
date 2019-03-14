@@ -15,17 +15,56 @@ use tantivy::schema::*;
 use tantivy::Index;
 use tantivy::{DocId, DocSet, Postings};
 
-use rulinalg::matrix::Matrix;
+use std::collections::HashMap;
+
+use rulinalg::matrix::{BaseMatrixMut, MatrixSliceMut, Matrix};
 use std::str;
 
 use std::fmt;
 
 fn main() -> tantivy::Result<()> {
+
+    // Get result rows from tantivy.
     let tantivy_result = get_tantivy_matrix()?;
-    println!("Hello world {:?}", tantivy_result);
-    for record in tantivy_result {
-        println!("{:?}", record.text);
+
+    // Calculate number of documents.
+    let mut max_docid = 0;
+    for record in &tantivy_result {
+        if record.doc_id > max_docid {
+            max_docid = record.doc_id;
+        }
     }
+
+    // Map terms (strings) to ids (ints).
+    let mut terms_map = HashMap::new();
+    let mut max_termid = 0;
+    for record in &tantivy_result {
+        if let Some(_) = terms_map.get(&record.term) {
+        } else {
+            terms_map.insert(record.term.clone(), max_termid);
+            max_termid = max_termid + 1;
+        }
+    }
+
+    println!("terms map {:?}", terms_map);
+    println!("max_docid {:?}", max_docid);
+    println!("max_termid{:?}", max_termid);
+
+    // Create zeroed matrix with docs as rows and terms as columns.
+    let mut a = Matrix::<u32>::zeros(max_docid as usize + 1, max_termid + 1);
+
+    // Iterate over result rows.
+    for record in &tantivy_result {
+        let term_index = terms_map.get(&record.term).unwrap();
+        println!("record {:?} {:?} {:?}", record.doc_id, *term_index, record.term_freq);
+
+        // Set value in matrix.
+        let mut slice = a.sub_slice_mut([record.doc_id as usize, *term_index], 1, 1);
+        let mut value = slice.iter_mut().next().unwrap();
+        *value = record.term_freq;
+    }
+    println!("matrix {:?}", a);
+
     Ok(())
 }
 
@@ -34,7 +73,7 @@ struct TantivyDocTermFreq {
     doc_id: DocId,
     term_freq: u32,
     // text: &'a [u8]
-    text: String
+    term: String
     // term: Term
 }
 
@@ -123,11 +162,11 @@ fn get_tantivy_matrix<'a>() ->  tantivy::Result<Vec<TantivyDocTermFreq>> {
                     let record = TantivyDocTermFreq {
                         doc_id,
                         term_freq,
-                        text: String::from(current_text)
+                        term: String::from(current_text)
                         // text: current_key
                     };
                     records.push(record);
-                    println!("Doc {}: TermFreq {}: {:?}", doc_id, term_freq, positions);
+                    // println!("Doc {}: TermFreq {}: {:?}", doc_id, term_freq, positions);
                 }
         }
     }
